@@ -1,0 +1,237 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="dark">
+<meta name="application-name" content="Big Calculator">
+<meta name="description" content="Big-button calculator with D-pad navigation. Glanceable on Meta Ray-Ban Display.">
+<link rel="icon" type="image/png" href="icon-192.png">
+<link rel="apple-touch-icon" href="apple-touch-icon.png">
+<title>Big Calculator</title>
+<style>
+:root{--accent:#94A3B8;--bg:#0B0F14;--card:#161C26;--line:#2A3442;--text:#F3F6FA;--dim:#9AA6B6;--op:#243041;}
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{height:100%;overflow:hidden}
+body{display:flex;align-items:center;justify-content:center;min-height:100dvh;background:#000;color:var(--text);font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;-webkit-user-select:none;user-select:none;-webkit-tap-highlight-color:transparent}
+.app{width:min(480px,100vw - 24px);height:100dvh;max-height:780px;display:flex;flex-direction:column;padding:16px 14px 12px;background:var(--bg);border-radius:18px;gap:8px}
+h1{font-size:18px;text-align:center}
+.expr{min-height:28px;text-align:right;font-size:16px;color:var(--dim);padding:0 6px;overflow:hidden;white-space:nowrap;text-overflow:ellipsis}
+.disp{min-height:88px;background:var(--card);border:2px solid var(--line);border-radius:14px;display:flex;align-items:center;justify-content:flex-end;padding:6px 14px;font-size:52px;font-weight:700;overflow:hidden;white-space:nowrap}
+.grid{flex:1;min-height:0;display:grid;grid-template-columns:repeat(4,1fr);grid-template-rows:repeat(5,1fr);gap:8px}
+.grid button{min-height:48px;font-size:30px;font-weight:600;font-family:inherit;color:var(--text);background:var(--card);border:1px solid var(--line);border-radius:14px;cursor:pointer}
+.grid button:focus-visible{outline:3px solid var(--accent);outline-offset:2px}
+.grid button:active{transform:scale(.97)}
+.grid button.op{background:var(--op);color:var(--accent)}
+.grid button.eq{background:var(--accent);border-color:var(--accent);color:#101418;font-weight:800}
+.grid button.focused{outline:3px solid var(--accent);outline-offset:2px}
+.grid button.util{color:#FCA5A5}
+</style>
+</head>
+<body>
+<div class="app">
+  <h1>&#x1F9EE; Big Calculator</h1>
+  <div class="expr" id="expr"></div>
+  <div class="disp" id="disp">0</div>
+  <div class="grid" id="grid"></div>
+</div>
+<script>
+(function(){
+"use strict";
+var KEYS=[
+ ["C","util"],["\u232B","util"],["%","op"],["\u00F7","op"],
+ ["7",""],["8",""],["9",""],["\u00D7","op"],
+ ["4",""],["5",""],["6",""],["\u2212","op"],
+ ["1",""],["2",""],["3",""],["+","op"],
+ ["0",""],[".",""],["=","eq"]
+];
+var ROWS=5, COLS=4;
+var OP={ "\u00F7":"/", "\u00D7":"*", "\u2212":"-", "+":"+" };
+var SHOW={ "/":"\u00F7", "*":"\u00D7", "-":"\u2212", "+":"+" };
+
+function tokenize(expr){
+  var tokens=[], num="";
+  for(var i=0;i<expr.length;i++){
+    var ch=expr[i];
+    if((ch>="0"&&ch<="9")||ch==="."){ num+=ch; }
+    else{ if(num!==""){ tokens.push(parseFloat(num)); num=""; } tokens.push(ch); }
+  }
+  if(num!=="") tokens.push(parseFloat(num));
+  return tokens;
+}
+function toRPN(tokens){
+  var prec={"+":1,"-":1,"*":2,"/":2};
+  var out=[], stack=[];
+  for(var i=0;i<tokens.length;i++){
+    var t=tokens[i];
+    if(typeof t==="number"){ out.push(t); }
+    else{ while(stack.length&&prec[stack[stack.length-1]]>=prec[t]) out.push(stack.pop()); stack.push(t); }
+  }
+  while(stack.length) out.push(stack.pop());
+  return out;
+}
+function evalRPN(rpn){
+  var s=[];
+  for(var i=0;i<rpn.length;i++){
+    var t=rpn[i];
+    if(typeof t==="number"){ s.push(t); }
+    else{
+      var b=s.pop(), a=s.pop();
+      if(a===undefined||b===undefined) return NaN;
+      if(t==="+") s.push(a+b);
+      else if(t==="-") s.push(a-b);
+      else if(t==="*") s.push(a*b);
+      else if(t==="/"){ if(b===0) return NaN; s.push(a/b); }
+    }
+  }
+  return s.length===1?s[0]:NaN;
+}
+function evaluate(expr){
+  var tokens=tokenize(expr);
+  if(!tokens.length) return NaN;
+  if(typeof tokens[tokens.length-1]!=="number") tokens.pop();
+  if(!tokens.length) return NaN;
+  return evalRPN(toRPN(tokens));
+}
+function fmt(v){
+  if(typeof v!=="number"||isNaN(v)||!isFinite(v)) return "Error";
+  return String(parseFloat(v.toPrecision(12)));
+}
+
+var entry="0";        // current number being typed, as string
+var tokens=[];        // completed [number, op, number, op...]
+var justEvaluated=false;
+var fr=0, fc=0;       // focus ring cell row/col (row 4: "0" spans cols 0-1)
+var gridEl=document.getElementById("grid");
+var dispEl=document.getElementById("disp");
+var exprEl=document.getElementById("expr");
+var btns=[];
+
+function cellToBtn(r,c){
+  if(r===4){ return c<=1?16:(c===2?17:18); }
+  return r*COLS+c;
+}
+
+function exprString(){
+  var s="";
+  for(var i=0;i<tokens.length;i++){
+    s+= (typeof tokens[i]==="number") ? fmt(tokens[i]) : " "+SHOW[tokens[i]]+" ";
+  }
+  return s;
+}
+function render(){
+  dispEl.textContent=entry;
+  exprEl.textContent=exprString();
+  var focused=cellToBtn(fr,fc);
+  btns.forEach(function(b,i){
+    if(i===focused) b.classList.add("focused"); else b.classList.remove("focused");
+  });
+}
+function inputDigit(ch){
+  if(justEvaluated){ entry="0"; tokens=[]; justEvaluated=false; }
+  if(ch==="."){
+    if(entry.indexOf(".")>=0) return;
+    entry+=".";
+  }else{
+    entry=(entry==="0")?ch:entry+ch;
+  }
+  render();
+}
+function inputOp(opKey){
+  var op=OP[opKey];
+  if(justEvaluated){ justEvaluated=false; }
+  if(entry!==""&&entry!=="-"){ tokens.push(parseFloat(entry)); }
+  if(tokens.length&&typeof tokens[tokens.length-1]!=="number"){ tokens[tokens.length-1]=op; }
+  else if(tokens.length){ tokens.push(op); }
+  entry="0";
+  render();
+}
+function inputPercent(){
+  var v=parseFloat(entry);
+  if(isNaN(v)) return;
+  entry=fmt(v/100);
+  justEvaluated=false;
+  render();
+}
+function inputEquals(){
+  if(justEvaluated) return;
+  var expr=tokens.slice();
+  if(entry!==""&&entry!=="-") expr.push(parseFloat(entry));
+  var exprStr="";
+  for(var i=0;i<expr.length;i++){ exprStr+= (typeof expr[i]==="number")?expr[i]:expr[i]; }
+  var res=evaluate(exprStr);
+  entry=fmt(res);
+  tokens=[];
+  justEvaluated=true;
+  render();
+}
+function inputClear(){ entry="0"; tokens=[]; justEvaluated=false; render(); }
+function inputBack(){
+  if(justEvaluated){ inputClear(); return; }
+  entry=entry.length>1?entry.slice(0,-1):"0";
+  render();
+}
+function press(key){
+  if(key==="C") inputClear();
+  else if(key==="\u232B") inputBack();
+  else if(key==="%") inputPercent();
+  else if(key==="=") inputEquals();
+  else if(OP[key]) inputOp(key);
+  else inputDigit(key);
+  moveRingToKey(key);
+}
+function moveRingToKey(key){
+  for(var i=0;i<btns.length;i++){
+    if(btns[i].getAttribute("data-key")===key){
+      var pos=btnToCell(i); fr=pos[0]; fc=pos[1]; break;
+    }
+  }
+  render();
+}
+function btnToCell(i){
+  if(i===16) return [4,0];
+  if(i===17) return [4,2];
+  if(i===18) return [4,3];
+  return [Math.floor(i/COLS), i%COLS];
+}
+function buildGrid(){
+  for(var i=0;i<KEYS.length;i++){
+    (function(i){
+      var def=KEYS[i];
+      var b=document.createElement("button");
+      b.textContent=def[0];
+      b.setAttribute("data-key",def[0]);
+      b.setAttribute("data-focusable","");
+      if(def[1]) b.className=def[1];
+      if(def[0]==="0") b.style.gridColumn="span 2";
+      b.addEventListener("click",function(){ press(def[0]); });
+      gridEl.appendChild(b);
+      btns.push(b);
+    })(i);
+  }
+}
+document.addEventListener("keydown",function(e){
+  var k=e.key;
+  if(k==="ArrowUp"){ e.preventDefault(); fr=(fr+ROWS-1)%ROWS; render(); }
+  else if(k==="ArrowDown"){ e.preventDefault(); fr=(fr+1)%ROWS; render(); }
+  else if(k==="ArrowLeft"){ e.preventDefault(); fc=(fc+COLS-1)%COLS; render(); }
+  else if(k==="ArrowRight"){ e.preventDefault(); fc=(fc+1)%COLS; render(); }
+  else if(k==="Enter"){ e.preventDefault(); press(btns[cellToBtn(fr,fc)].getAttribute("data-key")); }
+  else if(k>="0"&&k<="9"){ press(k); }
+  else if(k==="."){ press("."); }
+  else if(k==="+"){ press("+"); }
+  else if(k==="-"){ press("\u2212"); }
+  else if(k==="*"){ press("\u00D7"); }
+  else if(k==="/"){ e.preventDefault(); press("\u00F7"); }
+  else if(k==="Escape"){ press("C"); }
+  else if(k==="c"||k==="C"){ press("C"); }
+  else if(k==="="){ press("="); }
+  else if(k==="%"){ press("%"); }
+  else if(k==="Backspace"){ e.preventDefault(); press("\u232B"); }
+});
+buildGrid();
+render();
+})();
+</script>
+</body>
+</html>
